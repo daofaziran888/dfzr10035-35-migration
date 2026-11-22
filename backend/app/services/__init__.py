@@ -21,6 +21,8 @@ from app.services.data_version import DataVersionService
 from app.services.pipeline_audit import PipelineAuditService
 from app.services.govern_report import GovernReportService
 from app.services.incr_tracker import IncrTrackerService
+from app.services.incr_breakpoint import IncrBreakpointService
+from app.services.cursor_migration import CursorMigrationService
 from app.services.sample_check import SampleCheckService
 from app.services.cost_account import CostAccountService
 from app.services.task_schedule import TaskScheduleService
@@ -45,6 +47,8 @@ SERVICES: dict[str, BaseModuleService] = {
     "pipeline_audit": PipelineAuditService(),
     "govern_report": GovernReportService(),
     "incr_tracker": IncrTrackerService(),
+    "incr_breakpoint": IncrBreakpointService(),
+    "cursor_migration": CursorMigrationService(),
     "sample_check": SampleCheckService(),
     "cost_account": CostAccountService(),
     "task_schedule": TaskScheduleService(),

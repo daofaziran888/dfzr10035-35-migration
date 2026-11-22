@@ -92,6 +92,90 @@ class RetryQueueService(BaseModuleService):
             "status": "待生成", "pending": True, "abnormal": True,
         })
 
+    def replay_claim(self, task_id: int, outcome: str = "claim") -> dict:
+        """认领重放队列任务，并把认领结果回写到增量追踪清单（增量断点）。
+
+        - claim：工作节点领取下一段重放，任务 待重试 → 重试中，断点记录“已认领”；
+        - succeed：重放成功，任务 → 已成功；若产出可验证采集位置，断点才允许确认；
+        - fail：重放未成功，任务保持待重试，断点保持待重放，绝不推进游标。
+
+        并发安全：只有处于“待重试”的任务能被领取，已被领取的任务再次领取会被拒绝。
+        """
+        task = store.find(self.MODULE, task_id)
+        if task is None:
+            return {"ok": False, "message": f"重放任务 {task_id} 不存在"}
+        from app.services.incr_breakpoint import IncrBreakpointService
+
+        bp_service = IncrBreakpointService()
+        linked_bp = self._find_linked_breakpoint(task)
+
+        if outcome == "claim":
+            if task.get("status") != "待重试":
+                return {
+                    "ok": False,
+                    "message": f"任务{task.get('任务编号')}状态为{task.get('status')}，已被领取或已结束，不能重复认领",
+                    "task": task,
+                }
+            task["status"] = "重试中"
+            task["pending"] = True
+            task["队列状态"] = f"claimed:{task.get('请求引用', '')}"
+            task["最后重试"] = "2026-11-22 11:00:00"
+            if linked_bp is not None:
+                bp_service.apply_replay_claim(
+                    int(linked_bp["id"]), int(task["id"]), task["任务编号"], "已认领")
+            return {
+                "ok": True,
+                "message": "认领成功，请求引用已保留；认领不推进采集边界",
+                "task": task,
+                "breakpoint": linked_bp,
+                "credential_type": "replay",
+            }
+
+        if outcome == "succeed":
+            task["status"] = "已成功"
+            task["pending"] = False
+            task["abnormal"] = False
+            task["队列状态"] = "replayed_ok"
+            if linked_bp is not None:
+                linked_bp["认领结果"] = "重放成功"
+                # 重放成功后仍需可验证采集位置才能确认，默认保持待重放，
+                # 由采集侧凭成功日志执行“确认采集位置”，避免用请求引用冒充已采。
+            return {"ok": True, "message": "重放成功，待可验证采集位置确认后方可推进游标",
+                    "task": task, "breakpoint": linked_bp}
+
+        # fail：保留待重放，不能跳过
+        task["status"] = "待重试"
+        task["pending"] = True
+        task["队列状态"] = f"retry_failed:{task.get('请求引用', '')}"
+        if linked_bp is not None:
+            linked_bp["认领结果"] = "重放失败"
+        return {"ok": True, "message": "重放未成功，任务保留待重放，未跳过任何请求",
+                "task": task, "breakpoint": linked_bp}
+
+    @staticmethod
+    def _find_linked_breakpoint(task: dict) -> dict | None:
+        code = task.get("关联断点编号") or ""
+        for bp in store.rows("incr_breakpoint"):
+            if code and bp.get("断点编号") == code:
+                return bp
+        # 兜底：按端点 + 请求引用匹配
+        for bp in store.rows("incr_breakpoint"):
+            if (bp.get("目标端点") == task.get("失败端点")
+                    and bp.get("请求引用") == task.get("请求引用")):
+                return bp
+        return None
+
+    def claim_next_for_endpoint(self, endpoint: str) -> dict:
+        """用重放队列领取某端点的下一段数据：取最早一条待重试任务进行认领。"""
+        candidates = [
+            r for r in store.rows(self.MODULE)
+            if r.get("失败端点") == endpoint and r.get("status") == "待重试"
+        ]
+        if not candidates:
+            return {"ok": False, "message": f"端点{endpoint}没有待重放任务可领取",
+                    "endpoint": endpoint}
+        return self.replay_claim(int(candidates[0]["id"]), "claim")
+
     def calc_recovery_rate(self) -> dict:
         """跨模块恢复率统计：分析重放队列成功/失败分布及关联调用日志。"""
         retries = store.rows("retry_queue")

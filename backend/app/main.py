@@ -158,6 +158,55 @@ def chain_incremental_health(endpoint: str):
     return IncrTrackerService().check_incremental_health(endpoint)
 
 
+# ---------- 旧游标 → 增量断点迁移链路（跨 cursor_migration/incr_breakpoint/incr_tracker/retry_queue/call_log） ----------
+
+@app.get("/api/chain/cursor-migration/{batch_id}")
+def chain_cursor_migration_report(batch_id: int):
+    """迁移结果总览：批次进度、断点清单、待重放/待核、下一次采集范围、增量追踪清单回写情况。"""
+    from app.services.cursor_migration import CursorMigrationService
+    return CursorMigrationService().migration_report(batch_id)
+
+
+@app.post("/api/chain/cursor-migration/{batch_id}/action/{action}")
+def chain_cursor_migration_action(batch_id: int, action: str, remark: str | None = None):
+    """迁移动作：登记批次/转换下一条/中断迁移/继续回填/完成迁移/端点上线/回滚批次。"""
+    from app.services.cursor_migration import CursorMigrationService
+    entry, message = CursorMigrationService().run_action(batch_id, action, remark)
+    return {"ok": entry is not None, "message": message, "entry": entry}
+
+
+@app.post("/api/chain/replay-claim/{task_id}")
+def chain_replay_claim(task_id: int, outcome: str = "claim"):
+    """重放队列认领：claim/succeed/fail，认领结果回写增量断点清单。"""
+    from app.services.retry_queue import RetryQueueService
+    return RetryQueueService().replay_claim(task_id, outcome)
+
+
+@app.post("/api/chain/replay-claim-next")
+def chain_replay_claim_next(endpoint: str):
+    """用重放队列领取该端点的下一段数据（最早一条待重试任务）。"""
+    from app.services.retry_queue import RetryQueueService
+    return RetryQueueService().claim_next_for_endpoint(endpoint)
+
+
+@app.get("/api/chain/next-collection-range")
+def chain_next_collection_range(endpoint: str, limit: int = 100):
+    """下一次增量采集范围：仅由已确认真实采集位置推进，返回 collection 凭据。"""
+    from app.services.incr_breakpoint import IncrBreakpointService
+    return IncrBreakpointService().next_collection_range(endpoint, limit)
+
+
+@app.get("/api/chain/breakpoint-todo")
+def chain_breakpoint_todo(endpoint: str | None = None):
+    """待重放与待核旧记录清单（含义不确定的旧值可查且不冒充已采）。"""
+    from app.services.incr_breakpoint import IncrBreakpointService
+    svc = IncrBreakpointService()
+    return {
+        "replay_todo": svc.replay_todo(endpoint),
+        "review_todo": svc.review_todo(endpoint),
+    }
+
+
 @app.get("/api/chain/sampling-coverage")
 def chain_sampling_coverage():
     """链路18：抽样覆盖率（跨 sample_check/call_log/data_version）"""

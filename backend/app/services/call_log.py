@@ -60,6 +60,10 @@ class CallLogService(BaseModuleService):
             "退避策略": "linear:3s",
             "最后重试": "",
             "队列状态": "from_call_log",
+            # 保留 call_N 请求引用：这是重放凭据，不是已采集位置
+            "请求引用": f"call_{log['id']}",
+            "凭据类型": "replay",
+            "关联断点编号": "",
             "status": "待重试", "pending": True, "abnormal": True,
         })
 
